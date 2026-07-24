@@ -118,6 +118,18 @@
         }
       }
 
+      // 成功後的動作
+      function onSuccess(msg) {
+        alert(msg);
+        location.reload(); 
+      }
+
+      // 失敗後的動作 (新加入的防呆機制)
+      function onFailure(error) {
+        alert("❌ 系統發生錯誤：\n" + error.message);
+        location.reload(); 
+      }
+
       // 提交出借
       function sendCheckout() {
         const borrower = document.getElementById('out-borrower').value;
@@ -130,7 +142,10 @@
         btn.disabled = true;
         btn.innerText = "照片上傳處理中，請稍候...";
         
-        google.script.run.withSuccessHandler(onSuccess).submitCheckout(borrower, photo);
+        google.script.run
+          .withSuccessHandler(onSuccess)
+          .withFailureHandler(onFailure)
+          .submitCheckout(borrower, photo);
       }
 
       // 提交歸還 (無照片版本)
@@ -146,13 +161,10 @@
         btn.disabled = true;
         btn.innerText = "資料上傳中，請稍候...";
 
-        google.script.run.withSuccessHandler(onSuccess).submitReturn(borrower, mileage, fuel, highway);
-      }
-
-      // 成功後的動作
-      function onSuccess(msg) {
-        alert(msg);
-        location.reload(); 
+        google.script.run
+          .withSuccessHandler(onSuccess)
+          .withFailureHandler(onFailure)
+          .submitReturn(borrower, mileage, fuel, highway);
       }
     </script>
   </body>
