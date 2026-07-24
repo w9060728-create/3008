@@ -14,17 +14,18 @@
       .form-group { margin-bottom: 15px; }
       label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
       input, select { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
-      
+
       button.submit-btn { width: 100%; padding: 12px; background: #008CBA; color: white; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; }
       button.submit-btn:disabled { background: #999; }
       .section { display: none; }
       .section.active { display: block; }
+      .hint { font-size: 12px; color: #888; margin-top: -10px; margin-bottom: 15px; }
     </style>
   </head>
   <body>
     <div class="container">
       <h2>🚗 數位公務車系統</h2>
-      
+
       <div class="tabs">
         <button class="tab-btn active" onclick="switchTab('checkout')">借車填表</button>
         <button class="tab-btn" onclick="switchTab('return')">還車填表</button>
@@ -40,7 +41,8 @@
           <label>出車時儀表板總里程數</label>
           <input type="number" id="out-mileage" placeholder="請看儀表板輸入">
         </div>
-        
+        <p class="hint">出借時間將由系統自動記錄，不需手動填寫</p>
+
         <button class="submit-btn" id="btn-out" onclick="sendCheckout()">送出出借紀錄</button>
       </div>
 
@@ -61,10 +63,11 @@
         <div class="form-group">
           <label>有無行駛高速公路</label>
           <select id="in-highway">
-            <option value="無">無</option>
-            <option value="有">有</option>
+            <option value="否">否</option>
+            <option value="是">是</option>
           </select>
         </div>
+        <p class="hint">歸還時間將由系統自動記錄，不需手動填寫</p>
 
         <button class="submit-btn" id="btn-in" onclick="sendReturn()">送出歸還紀錄</button>
       </div>
@@ -81,15 +84,28 @@
         event.target.classList.add('active');
       }
 
+      // 產生跟 Google 表單一致格式的時間字串，例如 2026/07/24 15:59:00
+      function getNowString() {
+        const now = new Date();
+        const pad = n => String(n).padStart(2, '0');
+        const y = now.getFullYear();
+        const m = pad(now.getMonth() + 1);
+        const d = pad(now.getDate());
+        const h = pad(now.getHours());
+        const mi = pad(now.getMinutes());
+        const s = pad(now.getSeconds());
+        return `${y}/${m}/${d} ${h}:${mi}:${s}`;
+      }
+
       // 透過動態建立表單並利用 hidden_iframe 提交，確保 100% 寫入 Google 表單
-      function submitToGoogleForm(dataObj, btn) {
+      function submitToGoogleForm(dataObj, btn, successMsg) {
         const formUrl = "https://docs.google.com/forms/d/e/1FAIpQLSe_6JgN5emM84WJfckuzCHMAxdnaiUPlGZ67hgLpDXcEDqw3w/formResponse";
-        
+
         const form = document.createElement('form');
         form.method = 'POST';
         form.action = formUrl;
         form.target = 'hidden_iframe';
-        
+
         for (const [key, value] of Object.entries(dataObj)) {
           const input = document.createElement('input');
           input.type = 'hidden';
@@ -97,66 +113,59 @@
           input.value = value;
           form.appendChild(input);
         }
-        
+
         document.body.appendChild(form);
-        
-        const iframe = document.getElementById('hidden_iframe');
-        iframe.onload = function () {
-          alert("✅ 資料已成功匯入 Google 表單與試算表！");
-          location.reload();
-        };
-        
         form.submit();
-        
-        // 預防萬一 iframe 沒有觸發 onload，給予 1.5 秒的安全重新整理時間
+
+        // 統一用 1.2 秒延遲後提示完成並重新整理
         setTimeout(() => {
-          alert("✅ 資料已送出！");
+          alert(successMsg || "✅ 資料已送出！");
           location.reload();
-        }, 1500);
+        }, 1200);
       }
 
       function sendCheckout() {
-        const borrower = document.getElementById('out-borrower').value;
+        const borrower = document.getElementById('out-borrower').value.trim();
         const mileage = document.getElementById('out-mileage').value;
-        
-        if(!borrower || !mileage) return alert("請填寫姓名與出借里程！");
-        
+
+        if (!borrower || !mileage) return alert("請填寫姓名與出借里程！");
+
         const btn = document.getElementById('btn-out');
         btn.disabled = true;
         btn.innerText = "資料上傳中...";
 
         const data = {
-          "entry.880730415": borrower,
-          "entry.1002449250": "出借中",
-          "entry.982221373": mileage,
-          "entry.45115841": new Date().toLocaleString('zh-TW', { hour12: false })
+          "entry.880730415": borrower,        // 借用人
+          "entry.1002449250": "出借中",        // 狀態
+          "entry.45115841": getNowString(),   // 出借時間（自動）
+          "entry.982221373": mileage          // 出借里程
         };
-        
-        submitToGoogleForm(data, btn);
+
+        submitToGoogleForm(data, btn, "✅ 出借紀錄已成功送出！");
       }
 
       function sendReturn() {
-        const borrower = document.getElementById('in-borrower').value;
+        const borrower = document.getElementById('in-borrower').value.trim();
         const mileage = document.getElementById('in-mileage').value;
         const fuel = document.getElementById('in-fuel').value;
         const highway = document.getElementById('in-highway').value;
 
-        if(!borrower || !mileage) return alert("請填寫姓名與歸還里程！");
+        if (!borrower || !mileage) return alert("請填寫姓名與歸還里程！");
 
         const btn = document.getElementById('btn-in');
         btn.disabled = true;
         btn.innerText = "資料上傳中...";
 
         const data = {
-          "entry.880730415": borrower,
-          "entry.1002449250": "已歸還",
-          "entry.713679268": mileage,
-          "entry.407876717": fuel,
-          "entry.1467452406": highway,
-          "entry.226400751": new Date().toLocaleString('zh-TW', { hour12: false })
+          "entry.880730415": borrower,        // 借用人
+          "entry.1002449250": "已歸還",        // 狀態
+          "entry.226400751": getNowString(),  // 歸還時間（自動）
+          "entry.713679268": mileage,         // 歸還里程
+          "entry.407876717": fuel,            // 加油費用
+          "entry.1467452406": highway         // 高速公路（是/否）
         };
 
-        submitToGoogleForm(data, btn);
+        submitToGoogleForm(data, btn, "✅ 歸還紀錄已成功送出！");
       }
     </script>
   </body>
