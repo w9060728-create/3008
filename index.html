@@ -20,6 +20,8 @@
       .section { display: none; }
       .section.active { display: block; }
       .hint { font-size: 12px; color: #888; margin-top: -10px; margin-bottom: 15px; }
+      .last-mileage { background: #eef7ff; border: 1px solid #b3d9ff; padding: 10px; border-radius: 4px; margin-bottom: 15px; font-size: 14px; color: #05507a; }
+      .error-text { color: #d32f2f; font-size: 12px; margin-top: -10px; margin-bottom: 15px; display: none; }
     </style>
   </head>
   <body>
@@ -33,15 +35,17 @@
 
       <!-- 出借表單 -->
       <div id="checkout-section" class="section active">
+        <div class="last-mileage" id="last-mileage-box">正在讀取上次歸還里程...</div>
+
         <div class="form-group">
           <label>借用人姓名</label>
           <input type="text" id="out-borrower" placeholder="請輸入姓名">
         </div>
         <div class="form-group">
-          <label>出車時儀表板總里程數</label>
-          <input type="number" id="out-mileage" placeholder="請看儀表板輸入">
+          <label>目的地</label>
+          <input type="text" id="out-destination" placeholder="請輸入目的地">
         </div>
-        <p class="hint">出借時間將由系統自動記錄，不需手動填寫</p>
+        <p class="hint">出借時間將由系統自動記錄，里程將沿用上次歸還里程</p>
 
         <button class="submit-btn" id="btn-out" onclick="sendCheckout()">送出出借紀錄</button>
       </div>
@@ -54,15 +58,24 @@
         </div>
         <div class="form-group">
           <label>目前儀表板總里程數</label>
-          <input type="number" id="in-mileage" placeholder="請看儀表板輸入">
+          <input type="number" id="in-mileage" placeholder="請看儀表板輸入" min="0">
+          <div class="error-text" id="err-mileage">里程必須是 0 以上的數字</div>
         </div>
         <div class="form-group">
           <label>加油費用 (若無請填0)</label>
-          <input type="number" id="in-fuel" value="0">
+          <input type="number" id="in-fuel" value="0" min="0">
+          <div class="error-text" id="err-fuel">加油費用必須是 0 以上的數字</div>
         </div>
         <div class="form-group">
           <label>有無行駛高速公路</label>
           <select id="in-highway">
+            <option value="否">否</option>
+            <option value="是">是</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>車輛外觀是否有損傷</label>
+          <select id="in-damage">
             <option value="否">否</option>
             <option value="是">是</option>
           </select>
@@ -77,11 +90,66 @@
     <iframe name="hidden_iframe" id="hidden_iframe" style="display:none;"></iframe>
 
     <script>
+      const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTBQ4QcvqETSVWohxYjjFri-i6CKOmD3QdBRgu0rTtboX_QzPncnFvsioniaf4zs90eOHv333PK75wW/pub?output=csv";
+      // 試算表欄位順序（0為A欄）：0時間戳記 1紀錄ID 2借用人 3狀態 4出借時間 5出借里程 6歸還時間 7歸還里程 8使用里程 9加油費用 10高速公路 11目的地 12車輛外觀是否有損傷
+      const COL_RETURN_MILEAGE = 7;
+
+      // 簡易 CSV 解析（處理欄位中可能含逗號、雙引號的狀況）
+      function parseCSV(text) {
+        const rows = [];
+        let row = [], field = '', inQuotes = false;
+        for (let i = 0; i < text.length; i++) {
+          const c = text[i];
+          if (inQuotes) {
+            if (c === '"') {
+              if (text[i + 1] === '"') { field += '"'; i++; }
+              else { inQuotes = false; }
+            } else { field += c; }
+          } else {
+            if (c === '"') inQuotes = true;
+            else if (c === ',') { row.push(field); field = ''; }
+            else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+            else if (c === '\r') { /* skip */ }
+            else { field += c; }
+          }
+        }
+        if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+        return rows;
+      }
+
+      let lastMileage = null;
+
+      async function loadLastMileage() {
+        const box = document.getElementById('last-mileage-box');
+        try {
+          const res = await fetch(CSV_URL, { cache: "no-store" });
+          const text = await res.text();
+          const rows = parseCSV(text).filter(r => r.length > 1 && r[0]);
+          // 第一列是標題，從最後一列往前找第一筆「有填寫歸還里程」的紀錄
+          for (let i = rows.length - 1; i >= 1; i--) {
+            const val = rows[i][COL_RETURN_MILEAGE];
+            if (val !== undefined && val.trim() !== '' && !isNaN(val)) {
+              lastMileage = parseFloat(val);
+              break;
+            }
+          }
+          if (lastMileage !== null) {
+            box.innerText = `📊 上次歸還里程：${lastMileage} km`;
+          } else {
+            box.innerText = `⚠️ 尚無歷史歸還紀錄`;
+          }
+        } catch (e) {
+          box.innerText = `⚠️ 無法讀取上次里程，請至試算表確認`;
+        }
+      }
+      loadLastMileage();
+
       function switchTab(tab) {
         document.querySelectorAll('.section').forEach(el => el.classList.remove('active'));
         document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
         document.getElementById(tab + '-section').classList.add('active');
         event.target.classList.add('active');
+        if (tab === 'checkout') loadLastMileage();
       }
 
       // 產生跟 Google 表單一致格式的時間字串，例如 2026/07/24 15:59:00
@@ -95,6 +163,13 @@
         const mi = pad(now.getMinutes());
         const s = pad(now.getSeconds());
         return `${y}/${m}/${d} ${h}:${mi}:${s}`;
+      }
+
+      // 檢查是否為 0 以上的合法數字
+      function isValidNonNegativeNumber(value) {
+        if (value === '' || value === null) return false;
+        const n = Number(value);
+        return !isNaN(n) && isFinite(n) && n >= 0;
       }
 
       // 透過動態建立表單並利用 hidden_iframe 提交，確保 100% 寫入 Google 表單
@@ -117,7 +192,6 @@
         document.body.appendChild(form);
         form.submit();
 
-        // 統一用 1.2 秒延遲後提示完成並重新整理
         setTimeout(() => {
           alert(successMsg || "✅ 資料已送出！");
           location.reload();
@@ -126,9 +200,10 @@
 
       function sendCheckout() {
         const borrower = document.getElementById('out-borrower').value.trim();
-        const mileage = document.getElementById('out-mileage').value;
+        const destination = document.getElementById('out-destination').value.trim();
 
-        if (!borrower || !mileage) return alert("請填寫姓名與出借里程！");
+        if (!borrower) return alert("請填寫借用人姓名！");
+        if (!destination) return alert("請填寫目的地！");
 
         const btn = document.getElementById('btn-out');
         btn.disabled = true;
@@ -138,7 +213,7 @@
           "entry.880730415": borrower,        // 借用人
           "entry.1002449250": "出借中",        // 狀態
           "entry.45115841": getNowString(),   // 出借時間（自動）
-          "entry.982221373": mileage          // 出借里程
+          "entry.250150694": destination      // 目的地
         };
 
         submitToGoogleForm(data, btn, "✅ 出借紀錄已成功送出！");
@@ -146,11 +221,35 @@
 
       function sendReturn() {
         const borrower = document.getElementById('in-borrower').value.trim();
-        const mileage = document.getElementById('in-mileage').value;
-        const fuel = document.getElementById('in-fuel').value;
+        const mileageEl = document.getElementById('in-mileage');
+        const fuelEl = document.getElementById('in-fuel');
+        const mileage = mileageEl.value;
+        const fuel = fuelEl.value;
         const highway = document.getElementById('in-highway').value;
+        const damage = document.getElementById('in-damage').value;
 
-        if (!borrower || !mileage) return alert("請填寫姓名與歸還里程！");
+        // 重置錯誤提示
+        document.getElementById('err-mileage').style.display = 'none';
+        document.getElementById('err-fuel').style.display = 'none';
+
+        let hasError = false;
+
+        if (!borrower) { alert("請填寫借用人姓名！"); return; }
+
+        if (!isValidNonNegativeNumber(mileage)) {
+          document.getElementById('err-mileage').style.display = 'block';
+          hasError = true;
+        }
+        if (!isValidNonNegativeNumber(fuel)) {
+          document.getElementById('err-fuel').style.display = 'block';
+          hasError = true;
+        }
+        if (lastMileage !== null && isValidNonNegativeNumber(mileage) && Number(mileage) < lastMileage) {
+          alert(`歸還里程 (${mileage}) 不可小於上次歸還里程 (${lastMileage})，請確認輸入是否正確！`);
+          hasError = true;
+        }
+
+        if (hasError) return;
 
         const btn = document.getElementById('btn-in');
         btn.disabled = true;
@@ -162,7 +261,8 @@
           "entry.226400751": getNowString(),  // 歸還時間（自動）
           "entry.713679268": mileage,         // 歸還里程
           "entry.407876717": fuel,            // 加油費用
-          "entry.1467452406": highway         // 高速公路（是/否）
+          "entry.1467452406": highway,        // 高速公路（是/否）
+          "entry.596606120": damage           // 車輛外觀是否有損傷
         };
 
         submitToGoogleForm(data, btn, "✅ 歸還紀錄已成功送出！");
