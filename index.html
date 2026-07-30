@@ -14,29 +14,30 @@
       .form-group { margin-bottom: 15px; }
       label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
       input, select { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
-
+ 
       button.submit-btn { width: 100%; padding: 12px; background: #008CBA; color: white; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; }
-      button.submit-btn:disabled { background: #999; }
+      button.submit-btn:disabled { background: #999; cursor: not-allowed; }
       .section { display: none; }
       .section.active { display: block; }
       .hint { font-size: 12px; color: #888; margin-top: -10px; margin-bottom: 15px; }
       .last-mileage { background: #eef7ff; border: 1px solid #b3d9ff; padding: 10px; border-radius: 4px; margin-bottom: 15px; font-size: 14px; color: #05507a; }
+      .status-blocked { background: #fff3e0; border: 1px solid #ffcc80; color: #a15c00; padding: 10px; border-radius: 4px; margin-bottom: 15px; font-size: 14px; }
       .error-text { color: #d32f2f; font-size: 12px; margin-top: -10px; margin-bottom: 15px; display: none; }
     </style>
   </head>
   <body>
     <div class="container">
       <h2>🚗 數位公務車系統</h2>
-
+ 
       <div class="tabs">
         <button class="tab-btn active" onclick="switchTab('checkout')">借車填表</button>
         <button class="tab-btn" onclick="switchTab('return')">還車填表</button>
       </div>
-
+ 
       <!-- 出借表單 -->
       <div id="checkout-section" class="section active">
-        <div class="last-mileage" id="last-mileage-box">正在讀取上次歸還里程...</div>
-
+        <div class="last-mileage" id="last-mileage-box">正在讀取車輛狀態...</div>
+ 
         <div class="form-group">
           <label>借用人姓名</label>
           <input type="text" id="out-borrower" placeholder="請輸入姓名">
@@ -46,10 +47,10 @@
           <input type="text" id="out-destination" placeholder="請輸入目的地">
         </div>
         <p class="hint">出借時間將由系統自動記錄，里程將沿用上次歸還里程</p>
-
+ 
         <button class="submit-btn" id="btn-out" onclick="sendCheckout()">送出出借紀錄</button>
       </div>
-
+ 
       <!-- 歸還表單 -->
       <div id="return-section" class="section">
         <div class="form-group">
@@ -81,19 +82,21 @@
           </select>
         </div>
         <p class="hint">歸還時間將由系統自動記錄，不需手動填寫</p>
-
+ 
         <button class="submit-btn" id="btn-in" onclick="sendReturn()">送出歸還紀錄</button>
       </div>
     </div>
-
+ 
     <!-- 隱藏的 Iframe，用來接收 Google 表單的提交回應 -->
     <iframe name="hidden_iframe" id="hidden_iframe" style="display:none;"></iframe>
-
+ 
     <script>
       const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTBQ4QcvqETSVWohxYjjFri-i6CKOmD3QdBRgu0rTtboX_QzPncnFvsioniaf4zs90eOHv333PK75wW/pub?output=csv";
       // 試算表欄位順序（0為A欄）：0時間戳記 1紀錄ID 2借用人 3狀態 4出借時間 5出借里程 6歸還時間 7歸還里程 8使用里程 9加油費用 10高速公路 11目的地 12車輛外觀是否有損傷
+      const COL_BORROWER = 2;
+      const COL_STATUS = 3;
       const COL_RETURN_MILEAGE = 7;
-
+ 
       // 簡易 CSV 解析（處理欄位中可能含逗號、雙引號的狀況）
       function parseCSV(text) {
         const rows = [];
@@ -116,42 +119,80 @@
         if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
         return rows;
       }
-
+ 
       let lastMileage = null;
-
-      async function loadLastMileage() {
+      let carStatus = null;          // 目前車輛狀態："出借中" / "已歸還" / null
+      let currentBorrowerOut = null; // 目前借出人姓名（若車輛出借中）
+ 
+      // 讀取試算表，同時判斷「上次歸還里程」與「目前車輛是否已被借出」
+      async function loadVehicleState() {
         const box = document.getElementById('last-mileage-box');
+        box.className = 'last-mileage';
+        box.innerText = '正在讀取車輛狀態...';
         try {
           const res = await fetch(CSV_URL, { cache: "no-store" });
           const text = await res.text();
           const rows = parseCSV(text).filter(r => r.length > 1 && r[0]);
-          // 第一列是標題，從最後一列往前找第一筆「有填寫歸還里程」的紀錄
-          for (let i = rows.length - 1; i >= 1; i--) {
-            const val = rows[i][COL_RETURN_MILEAGE];
+          const dataRows = rows.slice(1); // 跳過標題列
+ 
+          // 1. 判斷目前車輛狀態：看最後一筆紀錄的「狀態」欄位
+          if (dataRows.length > 0) {
+            const lastRow = dataRows[dataRows.length - 1];
+            carStatus = (lastRow[COL_STATUS] || '').trim();
+            currentBorrowerOut = (lastRow[COL_BORROWER] || '').trim();
+          } else {
+            carStatus = null;
+            currentBorrowerOut = null;
+          }
+ 
+          // 2. 找上次歸還里程：從最後一列往前找第一筆「有填寫歸還里程」的紀錄
+          lastMileage = null;
+          for (let i = dataRows.length - 1; i >= 0; i--) {
+            const val = dataRows[i][COL_RETURN_MILEAGE];
             if (val !== undefined && val.trim() !== '' && !isNaN(val)) {
               lastMileage = parseFloat(val);
               break;
             }
           }
-          if (lastMileage !== null) {
-            box.innerText = `📊 上次歸還里程：${lastMileage} km`;
-          } else {
-            box.innerText = `⚠️ 尚無歷史歸還紀錄`;
-          }
+ 
+          renderVehicleState();
         } catch (e) {
-          box.innerText = `⚠️ 無法讀取上次里程，請至試算表確認`;
+          box.innerText = `⚠️ 無法讀取車輛狀態，請至試算表確認`;
         }
       }
-      loadLastMileage();
-
+ 
+      // 依照 carStatus 更新畫面顯示與借車按鈕是否可用
+      function renderVehicleState() {
+        const box = document.getElementById('last-mileage-box');
+        const btn = document.getElementById('btn-out');
+ 
+        let mileageText = lastMileage !== null
+          ? `📊 上次歸還里程：${lastMileage} km`
+          : `⚠️ 尚無歷史歸還紀錄`;
+ 
+        if (carStatus === '出借中') {
+          box.className = 'status-blocked';
+          box.innerHTML = `🚫 車輛目前借出中（借用人：<b>${currentBorrowerOut || '未知'}</b>），尚未歸還<br>${mileageText}`;
+          btn.disabled = true;
+          btn.innerText = '車輛借出中，無法借車';
+        } else {
+          box.className = 'last-mileage';
+          box.innerText = mileageText;
+          btn.disabled = false;
+          btn.innerText = '送出出借紀錄';
+        }
+      }
+ 
+      loadVehicleState();
+ 
       function switchTab(tab) {
         document.querySelectorAll('.section').forEach(el => el.classList.remove('active'));
         document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
         document.getElementById(tab + '-section').classList.add('active');
         event.target.classList.add('active');
-        if (tab === 'checkout') loadLastMileage();
+        if (tab === 'checkout') loadVehicleState();
       }
-
+ 
       // 產生跟 Google 表單一致格式的時間字串，例如 2026/07/24 15:59:00
       function getNowString() {
         const now = new Date();
@@ -164,23 +205,23 @@
         const s = pad(now.getSeconds());
         return `${y}/${m}/${d} ${h}:${mi}:${s}`;
       }
-
+ 
       // 檢查是否為 0 以上的合法數字
       function isValidNonNegativeNumber(value) {
         if (value === '' || value === null) return false;
         const n = Number(value);
         return !isNaN(n) && isFinite(n) && n >= 0;
       }
-
+ 
       // 透過動態建立表單並利用 hidden_iframe 提交，確保 100% 寫入 Google 表單
       function submitToGoogleForm(dataObj, btn, successMsg) {
         const formUrl = "https://docs.google.com/forms/d/e/1FAIpQLSe_6JgN5emM84WJfckuzCHMAxdnaiUPlGZ67hgLpDXcEDqw3w/formResponse";
-
+ 
         const form = document.createElement('form');
         form.method = 'POST';
         form.action = formUrl;
         form.target = 'hidden_iframe';
-
+ 
         for (const [key, value] of Object.entries(dataObj)) {
           const input = document.createElement('input');
           input.type = 'hidden';
@@ -188,38 +229,48 @@
           input.value = value;
           form.appendChild(input);
         }
-
+ 
         document.body.appendChild(form);
         form.submit();
-
+ 
         setTimeout(() => {
           alert(successMsg || "✅ 資料已送出！");
           location.reload();
         }, 1200);
       }
-
-      function sendCheckout() {
+ 
+      async function sendCheckout() {
         const borrower = document.getElementById('out-borrower').value.trim();
         const destination = document.getElementById('out-destination').value.trim();
-
+ 
         if (!borrower) return alert("請填寫借用人姓名！");
         if (!destination) return alert("請填寫目的地！");
-
+ 
         const btn = document.getElementById('btn-out');
         btn.disabled = true;
+        btn.innerText = "確認車輛狀態中...";
+ 
+        // 送出前重新抓一次最新狀態，避免頁面開太久、資料已經過時
+        await loadVehicleState();
+        if (carStatus === '出借中') {
+          alert(`⚠️ 車輛目前由 ${currentBorrowerOut || '他人'} 借出中，尚未歸還，無法再次借車！`);
+          return; // renderVehicleState() 內已經把按鈕鎖回去了
+        }
+ 
+        btn.disabled = true;
         btn.innerText = "資料上傳中...";
-
+ 
         const data = {
           "entry.880730415": borrower,        // 借用人
           "entry.1002449250": "出借中",        // 狀態
           "entry.45115841": getNowString(),   // 出借時間（自動）
           "entry.250150694": destination      // 目的地
         };
-
+ 
         submitToGoogleForm(data, btn, "✅ 出借紀錄已成功送出！");
       }
-
-      function sendReturn() {
+ 
+      async function sendReturn() {
         const borrower = document.getElementById('in-borrower').value.trim();
         const mileageEl = document.getElementById('in-mileage');
         const fuelEl = document.getElementById('in-fuel');
@@ -227,15 +278,15 @@
         const fuel = fuelEl.value;
         const highway = document.getElementById('in-highway').value;
         const damage = document.getElementById('in-damage').value;
-
+ 
         // 重置錯誤提示
         document.getElementById('err-mileage').style.display = 'none';
         document.getElementById('err-fuel').style.display = 'none';
-
+ 
         let hasError = false;
-
+ 
         if (!borrower) { alert("請填寫借用人姓名！"); return; }
-
+ 
         if (!isValidNonNegativeNumber(mileage)) {
           document.getElementById('err-mileage').style.display = 'block';
           hasError = true;
@@ -248,13 +299,23 @@
           alert(`歸還里程 (${mileage}) 不可小於上次歸還里程 (${lastMileage})，請確認輸入是否正確！`);
           hasError = true;
         }
-
+ 
+        // 確保目前確實有車輛在外，且姓名與借出人相符，避免對錯紀錄
+        await loadVehicleState();
+        if (carStatus !== '出借中') {
+          alert(`⚠️ 目前系統顯示車輛並非出借中，可能沒有可歸還的紀錄，請確認！`);
+          hasError = true;
+        } else if (currentBorrowerOut && borrower !== currentBorrowerOut) {
+          alert(`⚠️ 目前車輛借出人為「${currentBorrowerOut}」，與您填寫的姓名不符，請確認！`);
+          hasError = true;
+        }
+ 
         if (hasError) return;
-
+ 
         const btn = document.getElementById('btn-in');
         btn.disabled = true;
         btn.innerText = "資料上傳中...";
-
+ 
         const data = {
           "entry.880730415": borrower,        // 借用人
           "entry.1002449250": "已歸還",        // 狀態
@@ -264,9 +325,10 @@
           "entry.1467452406": highway,        // 高速公路（是/否）
           "entry.596606120": damage           // 車輛外觀是否有損傷
         };
-
+ 
         submitToGoogleForm(data, btn, "✅ 歸還紀錄已成功送出！");
       }
     </script>
   </body>
 </html>
+ 
